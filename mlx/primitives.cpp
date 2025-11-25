@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "mlx/backend/common/utils.h"
+#include "mlx/fast_primitives.h"
 #include "mlx/fft.h"
 #include "mlx/linalg.h"
 #include "mlx/ops.h"
@@ -4907,10 +4908,21 @@ std::vector<array> Softmax::vjp(
   assert(primals.size() == 1);
   assert(cotangents.size() == 1);
   auto& s = outputs[0];
-  auto sv = multiply(s, cotangents[0], stream());
-  return {subtract(
-      sv,
-      multiply(s, sum(sv, std::vector<int>{-1}, true, stream()), stream()))};
+  auto str = stream();
+
+  auto fallback = [str](const std::vector<array>& inputs) {
+    auto& s = inputs[0];
+    auto& g = inputs[1];
+    auto sv = multiply(s, g, str);
+    return std::vector<array>{subtract(
+        sv, multiply(s, sum(sv, std::vector<int>{-1}, true, str), str), str)};
+  };
+
+  return array::make_arrays(
+      {s.shape()},
+      {s.dtype()},
+      std::make_shared<fast::SoftmaxVJP>(str, fallback),
+      {s, cotangents[0]});
 }
 
 std::vector<array> Softmax::jvp(

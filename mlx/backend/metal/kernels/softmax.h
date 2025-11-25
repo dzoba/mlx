@@ -188,3 +188,153 @@ template <typename T, typename AccT = T, int N_READS = SOFTMAX_N_READS>
     }
   }
 }
+
+// Softmax VJP (backward pass)
+// Computes: ds = s * g - s * sum(s * g)
+// where s is the softmax output and g is the incoming gradient
+
+template <typename T, typename AccT = T, int N_READS = SOFTMAX_N_READS>
+[[kernel]] void softmax_vjp_single_row(
+    const device T* s_in,
+    const device T* g_in,
+    device T* out,
+    constant int& axis_size,
+    uint gid [[threadgroup_position_in_grid]],
+    uint _lid [[thread_position_in_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]]) {
+  int lid = _lid;
+
+  constexpr int SIMD_SIZE = 32;
+
+  threadgroup AccT local_sum[SIMD_SIZE];
+
+  AccT s_vals[N_READS];
+  AccT g_vals[N_READS];
+
+  s_in += gid * size_t(axis_size) + lid * N_READS;
+  g_in += gid * size_t(axis_size) + lid * N_READS;
+
+  // Load s and g values
+  if (lid * N_READS + N_READS <= axis_size) {
+    for (int i = 0; i < N_READS; i++) {
+      s_vals[i] = AccT(s_in[i]);
+      g_vals[i] = AccT(g_in[i]);
+    }
+  } else {
+    for (int i = 0; i < N_READS; i++) {
+      if ((lid * N_READS + i) < axis_size) {
+        s_vals[i] = AccT(s_in[i]);
+        g_vals[i] = AccT(g_in[i]);
+      } else {
+        s_vals[i] = AccT(0);
+        g_vals[i] = AccT(0);
+      }
+    }
+  }
+
+  if (simd_group_id == 0) {
+    local_sum[simd_lane_id] = 0;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Compute sum(s * g)
+  AccT dot_sum = 0;
+  for (int i = 0; i < N_READS; i++) {
+    dot_sum += s_vals[i] * g_vals[i];
+  }
+  dot_sum = simd_sum(dot_sum);
+  if (simd_lane_id == 0) {
+    local_sum[simd_group_id] = dot_sum;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd_group_id == 0) {
+    dot_sum = simd_sum(local_sum[simd_lane_id]);
+    if (simd_lane_id == 0) {
+      local_sum[0] = dot_sum;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  dot_sum = local_sum[0];
+
+  // Compute output: s * g - s * dot_sum = s * (g - dot_sum)
+  out += gid * size_t(axis_size) + lid * N_READS;
+  if (lid * N_READS + N_READS <= axis_size) {
+    for (int i = 0; i < N_READS; i++) {
+      out[i] = T(s_vals[i] * (g_vals[i] - dot_sum));
+    }
+  } else {
+    for (int i = 0; i < N_READS; i++) {
+      if ((lid * N_READS + i) < axis_size) {
+        out[i] = T(s_vals[i] * (g_vals[i] - dot_sum));
+      }
+    }
+  }
+}
+
+template <typename T, typename AccT = T, int N_READS = SOFTMAX_N_READS>
+[[kernel]] void softmax_vjp_looped(
+    const device T* s_in,
+    const device T* g_in,
+    device T* out,
+    constant int& axis_size,
+    uint gid [[threadgroup_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint lsize [[threads_per_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]]) {
+  s_in += gid * size_t(axis_size);
+  g_in += gid * size_t(axis_size);
+
+  constexpr int SIMD_SIZE = 32;
+
+  threadgroup AccT local_sum[SIMD_SIZE];
+
+  // First pass: compute sum(s * g)
+  AccT dot_sum = 0;
+  for (int r = 0; r < static_cast<int>(ceildiv(axis_size, N_READS * lsize));
+       r++) {
+    int offset = r * lsize * N_READS + lid * N_READS;
+    if (offset + N_READS <= axis_size) {
+      for (int i = 0; i < N_READS; i++) {
+        dot_sum += AccT(s_in[offset + i]) * AccT(g_in[offset + i]);
+      }
+    } else {
+      for (int i = 0; i < N_READS; i++) {
+        if (offset + i < axis_size) {
+          dot_sum += AccT(s_in[offset + i]) * AccT(g_in[offset + i]);
+        }
+      }
+    }
+  }
+
+  // Reduce across simd groups
+  dot_sum = simd_sum(dot_sum);
+  if (simd_lane_id == 0) {
+    local_sum[simd_group_id] = dot_sum;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  dot_sum = simd_sum(local_sum[simd_lane_id]);
+
+  // Second pass: compute output = s * (g - dot_sum)
+  out += gid * size_t(axis_size);
+  for (int r = 0; r < static_cast<int>(ceildiv(axis_size, N_READS * lsize));
+       r++) {
+    int offset = r * lsize * N_READS + lid * N_READS;
+    if (offset + N_READS <= axis_size) {
+      for (int i = 0; i < N_READS; i++) {
+        AccT s_val = AccT(s_in[offset + i]);
+        AccT g_val = AccT(g_in[offset + i]);
+        out[offset + i] = T(s_val * (g_val - dot_sum));
+      }
+    } else {
+      for (int i = 0; i < N_READS; i++) {
+        if (offset + i < axis_size) {
+          AccT s_val = AccT(s_in[offset + i]);
+          AccT g_val = AccT(g_in[offset + i]);
+          out[offset + i] = T(s_val * (g_val - dot_sum));
+        }
+      }
+    }
+  }
+}

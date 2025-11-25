@@ -155,6 +155,27 @@ class LayerNormVJP : public Custom {
   float eps_;
 };
 
+class SoftmaxVJP : public Custom {
+ public:
+  SoftmaxVJP(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(SoftmaxVJP)
+  bool is_equivalent(const Primitive& other) const override;
+  auto state() const {
+    return nullptr;
+  }
+};
+
 class RoPE : public Custom {
  public:
   RoPE(

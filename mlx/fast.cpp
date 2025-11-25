@@ -346,6 +346,10 @@ bool LayerNormVJP::is_equivalent(const Primitive& other) const {
   return eps_ == a_other.eps_;
 }
 
+bool SoftmaxVJP::is_equivalent(const Primitive& other) const {
+  return true;
+}
+
 array rope(
     std::vector<array> inputs,
     int dims,
