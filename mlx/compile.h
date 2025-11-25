@@ -31,6 +31,11 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
 /** Globally disable compilation.
  * Setting the environment variable ``MLX_DISABLE_COMPILE`` can also
  * be used to disable compilation.
+ *
+ * Compilation limits can be configured via environment variables:
+ * - ``MLX_MAX_COMPILE_DEPTH``: Maximum recursion depth for fusion (default: 16)
+ * - ``MLX_MAX_COMPILE_ARRAYS``: Maximum input arrays for fused kernel (default:
+ * 32)
  */
 void disable_compile();
 

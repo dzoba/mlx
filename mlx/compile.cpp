@@ -18,8 +18,15 @@
 
 namespace mlx::core {
 
-constexpr int max_compile_depth = 11;
-constexpr int max_compile_arrays = 24;
+int max_compile_depth() {
+  static int val = env::get_var("MLX_MAX_COMPILE_DEPTH", 16);
+  return val;
+}
+
+int max_compile_arrays() {
+  static int val = env::get_var("MLX_MAX_COMPILE_ARRAYS", 32);
+  return val;
+}
 
 bool is_unary(const Primitive& p) {
   return (
@@ -821,7 +828,7 @@ void compile_fuse(
       // - Stream mismatch
       // - Non fusable primitive
       // - Is global output but has a different shape
-      if (depth >= max_compile_depth || !a.has_primitive() ||
+      if (depth >= max_compile_depth() || !a.has_primitive() ||
           a.primitive().stream() != s || !is_fusable(a.primitive()) ||
           (output_map.find(a.id()) != output_map.end() && a.shape() != shape)) {
         // Possible input
@@ -863,7 +870,7 @@ void compile_fuse(
         // Not an input anymore since fusing it
         input_set.erase(a.id());
       }
-      if (input_set.size() >= max_compile_arrays) {
+      if (input_set.size() >= static_cast<size_t>(max_compile_arrays())) {
         return;
       }
       cache.insert({a.id()});
